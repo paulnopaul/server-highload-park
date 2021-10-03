@@ -23,6 +23,7 @@ fn main() {
 fn run_server(host: String, port: String) {
     let address = host + ":" + port.as_str();
     println!("Starting server at: {}", address);
+    println!("Root directory: {}", env::current_dir().unwrap().to_str().unwrap());
     let listener = TcpListener::bind(address).unwrap();
     for stream in listener.incoming() {
         let stream = stream.unwrap();
@@ -41,6 +42,8 @@ fn handle_connection(mut stream: TcpStream) {
     let parsed_request: Vec<&str> = request_string.splitn(3, ' ').collect();
     let method = parsed_request[0].to_string();
 
+    println!("Request: {}", request_string);
+
     let request_path = parsed_request[1][1..].to_string();
     let mut root_dir = env::current_dir().unwrap();
 
@@ -52,11 +55,14 @@ fn handle_connection(mut stream: TcpStream) {
 fn handle_request(root_dir: &mut PathBuf, method: String, request_path: String, stream: &mut TcpStream) {
     let (code, res_path) = handle_request_path(root_dir, request_path); // 200, 400, or 403
 
+
+    let mut content_type = String::from("");
     let mut content_len: u64 = 0;
     if code == 200 {
-        content_len = fs::metadata(&res_path).unwrap().len()
+        content_len = fs::metadata(&res_path).unwrap().len();
+        content_type = get_content_type(res_path.extension().unwrap().to_str().unwrap());
     }
-    write_headers(stream, content_len, code);
+    write_headers(stream, content_len, code, content_type);
 
     if method == "GET" && code == 200 {
         tcp_write_file(stream, res_path);
@@ -86,11 +92,29 @@ fn handle_request_path(root_dir: &mut PathBuf, request_path: String) -> (i32, Pa
     return (200, res_path);
 }
 
-fn write_headers(stream: &mut TcpStream, content_len: u64, code: i32) {
+fn get_content_type(ext: &str) -> String {
+    return String::from(match ext {
+        "html" => "text/html",
+        "css" => "text/css",
+        "js" => "text/javascript",
+        "jpg" => "image/jpeg",
+        "jpeg" => "image/jpeg",
+        "png" => "image/png",
+        "gif" => "image/gif",
+        "swf" => "application/x-shockwave-flash",
+        _ => ""
+    });
+}
+
+fn write_headers(stream: &mut TcpStream, content_len: u64, code: i32, content_type: String) {
     let status_line = format!("HTTP/1.0 {} {}", code, reason_from_code(code));
     let server_line = format!("Server: {}", "rust_static_server");
     let date_line = format!("Date: {}", httpdate::fmt_http_date(SystemTime::now()));
     let connection_line = format!("Connection: {}", "close");
+    let content_type_string = match code {
+        200 => format!("Content-Type: {}", content_type),
+        _ => String::from(""),
+    };
 
     let content_len_line = match code {
         200 => format!("Content-Length: {}", content_len),
@@ -98,12 +122,13 @@ fn write_headers(stream: &mut TcpStream, content_len: u64, code: i32) {
     };
 
     let headers = format!(
-        "{}\r\n{}\r\n{}\r\n{}\r\n{}\r\n\r\n",
+        "{}\r\n{}\r\n{}\r\n{}\r\n{}\r\n{}\r\n\r\n",
         status_line,
+        server_line,
         date_line,
         content_len_line,
+        content_type_string,
         connection_line,
-        server_line,
     );
     stream.write(headers.as_bytes()).unwrap();
 }

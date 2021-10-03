@@ -1,8 +1,11 @@
 FROM rust:1.31
 
 WORKDIR /usr/src/server-highload-park
-COPY . .
+COPY ./src ./src
+COPY ./static ./static
+COPY ./Cargo.toml ./
 
-RUN cargo install --path .
+RUN ls
+RUN cargo build --release
 
-CMD ["server-highload-park"]
+CMD ["./target/release/server-highload-park"]
