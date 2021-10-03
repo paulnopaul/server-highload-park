@@ -11,8 +11,10 @@ use std::{
     env,
     path::PathBuf,
     time::SystemTime,
+    str,
 };
 use httpdate;
+use urlencoding;
 
 fn main() {
     let host = String::from("127.0.0.1");
@@ -27,7 +29,6 @@ fn run_server(host: String, port: String) {
     let listener = TcpListener::bind(address).unwrap();
     for stream in listener.incoming() {
         let stream = stream.unwrap();
-
         thread::spawn(|| {
             handle_connection(stream);
         });
@@ -38,23 +39,35 @@ fn run_server(host: String, port: String) {
 fn handle_connection(mut stream: TcpStream) {
     let mut buffer = [0; 1024];
     stream.read(&mut buffer).unwrap();
-    let request_string = String::from_utf8(buffer.to_vec()).unwrap();
-    let parsed_request: Vec<&str> = request_string.splitn(3, ' ').collect();
-    let method = parsed_request[0].to_string();
-
-    println!("Request: {}", request_string);
-
-    let request_path = parsed_request[1][1..].to_string();
+    let request_string = str::from_utf8(&buffer).unwrap();
+    let (method, request_path) = parse_request_string(request_string);
     let mut root_dir = env::current_dir().unwrap();
-
-    handle_request(&mut root_dir, method, request_path, &mut stream);
-
+    if method != "" {
+        handle_request(&mut root_dir, method, request_path, &mut stream);
+    }
     stream.flush().unwrap();
 }
 
-fn handle_request(root_dir: &mut PathBuf, method: String, request_path: String, stream: &mut TcpStream) {
-    let (code, res_path) = handle_request_path(root_dir, request_path); // 200, 400, or 403
+fn parse_request_string(request_string: &str) -> (String, String) {
+    let parsed_request: Vec<&str> = request_string.splitn(3, ' ').collect();
+    if parsed_request.len() == 3 {
+        let method = parsed_request[0].to_string();
+        let request_path = parsed_request[1].trim_start_matches('/');
+        let split = request_path.split_once('?');
+        let url_path = urlencoding::decode(match split.is_some() {
+            true => split.unwrap().0,
+            _ => request_path,
+        }).unwrap().to_string();
+        return (method, url_path);
+    }
+    return (String::new(), String::new());
+}
 
+fn handle_request(root_dir: &mut PathBuf, method: String, request_path: String, stream: &mut TcpStream) {
+    let (mut code, res_path) = handle_request_path(root_dir, request_path); // 200, 400, or 403
+    if !(method == "GET" || method == "HEAD") {
+        code = 405;
+    }
 
     let mut content_type = String::from("");
     let mut content_len: u64 = 0;
