@@ -4,13 +4,15 @@ use std::{
     net::TcpStream,
     fs,
     thread,
-    path::Path,
     io::{
         BufRead,
         BufReader,
     },
     env,
+    path::PathBuf,
+    time::SystemTime,
 };
+use httpdate;
 
 fn main() {
     let host = String::from("127.0.0.1");
@@ -32,57 +34,109 @@ fn run_server(host: String, port: String) {
     println!("Server shut down");
 }
 
-#[allow(unused_must_use)]
 fn handle_connection(mut stream: TcpStream) {
     let mut buffer = [0; 1024];
     stream.read(&mut buffer).unwrap();
-
-    // Parse request
     let request_string = String::from_utf8(buffer.to_vec()).unwrap();
-    let res: Vec<&str> = request_string.splitn(3, ' ').collect();
-    let method = res[0].to_string();
-    let mut path = env::current_dir().unwrap().join(res[1][1..].to_string());
+    let parsed_request: Vec<&str> = request_string.splitn(3, ' ').collect();
+    let method = parsed_request[0].to_string();
 
-    // Handle request
-    let file_exists = path.exists();
-    let mut code = 200;
-    let mut reason = "OK";
-    if !file_exists {
-        path = env::current_dir().unwrap().join("static/404.html");
-        code = 404;
-        reason = "Not Found;"
+    let request_path = parsed_request[1][1..].to_string();
+    let mut root_dir = env::current_dir().unwrap();
+
+    handle_request(&mut root_dir, method, request_path, &mut stream);
+
+    stream.flush().unwrap();
+}
+
+fn handle_request(root_dir: &mut PathBuf, method: String, request_path: String, stream: &mut TcpStream) {
+    let (code, res_path) = handle_request_path(root_dir, request_path); // 200, 400, or 403
+
+    let mut content_len: u64 = 0;
+    if code == 200 {
+        content_len = fs::metadata(&res_path).unwrap().len()
+    }
+    write_headers(stream, content_len, code);
+
+    if method == "GET" && code == 200 {
+        tcp_write_file(stream, res_path);
+    }
+}
+
+fn handle_request_path(root_dir: &mut PathBuf, request_path: String) -> (i32, PathBuf) {
+    let empty_buf = PathBuf::new();
+    let mut full_path = root_dir.join(request_path.as_str());
+    let mut add_index = false;
+
+    if full_path.is_dir() {
+        full_path = full_path.join("index.html");
+        add_index = true;
+    }
+    if !full_path.exists() {
+        if add_index {
+            return (403, empty_buf);
+        }
+        return (404, empty_buf);
     }
 
-    let status_line = format!("HTTP/1.0 {} {}", code, reason);
+    let res_path = fs::canonicalize(full_path).unwrap();
+    if !res_path.starts_with(root_dir) {
+        return (403, empty_buf);
+    }
+    return (200, res_path);
+}
 
-    let content_len = {
-        fs::metadata(&path).unwrap().len()
+fn write_headers(stream: &mut TcpStream, content_len: u64, code: i32) {
+    let status_line = format!("HTTP/1.0 {} {}", code, reason_from_code(code));
+    let server_line = format!("Server: {}", "rust_static_server");
+    let date_line = format!("Date: {}", httpdate::fmt_http_date(SystemTime::now()));
+    let connection_line = format!("Connection: {}", "close");
+
+    let content_len_line = match code {
+        200 => format!("Content-Length: {}", content_len),
+        _ => String::from(""),
     };
 
-    let response = format!(
-        "{}\r\nContent-Length: {}\r\n\r\n",
+    let headers = format!(
+        "{}\r\n{}\r\n{}\r\n{}\r\n{}\r\n\r\n",
         status_line,
-        content_len,
+        date_line,
+        content_len_line,
+        connection_line,
+        server_line,
     );
-    stream.write(response.as_bytes()).unwrap();
+    stream.write(headers.as_bytes()).unwrap();
+}
 
-    if method != "HEAD" {
-        // Write file
-        let file = fs::File::open(&path).unwrap();
-        let mut reader = BufReader::with_capacity(1024 * 128, file);
-        loop {
-            let length = {
-                let buffer = reader.fill_buf().unwrap();
-                stream.write(buffer);
-                buffer.len()
-            };
-            if length == 0 {
-                break;
-            }
-            reader.consume(length);
-        }
+fn reason_from_code(code: i32) -> String {
+    if code == 200 {
+        return String::from("OK");
+    } else if code == 404 {
+        return String::from("Not Found");
+    } else if code == 403 {
+        return String::from("Forbidden");
+    } else if code == 405 {
+        return String::from("Method Not Allowed");
     }
+    return String::from("Unknown Code");
+}
 
-    // End
-    stream.flush().unwrap();
+fn tcp_write_file(stream: &mut TcpStream, path: PathBuf) {
+    let mut reader = BufReader::with_capacity(1024 * 128, fs::File::open(&path).unwrap());
+    loop {
+        let length = {
+            let buffer = reader.fill_buf().unwrap();
+            let len = buffer.len();
+            if len > 0 {
+                stream.write(buffer).unwrap();
+            }
+            len
+        };
+
+        if length == 0 {
+            break;
+        }
+
+        reader.consume(length);
+    }
 }
