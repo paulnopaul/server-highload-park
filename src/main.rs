@@ -18,7 +18,7 @@ use urlencoding;
 
 fn main() {
     let host = String::from("127.0.0.1");
-    let port = String::from("7878");
+    let port = String::from("80");
     run_server(host, port);
 }
 

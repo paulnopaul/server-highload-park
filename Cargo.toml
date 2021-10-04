@@ -8,3 +8,4 @@ edition = "2018"
 [dependencies]
 httpdate = "0.1.0"
 urlencoding = "2.1.0"
+threadpool = "1.0"
